@@ -25,6 +25,7 @@ from .field_type_alias import (
     get_field_alias_formatter,
 )
 from .fields import cfg_field
+from .config_header import config_defines, generate_config_header, write_config_header
 from .ref_proxy import ConfigRefProxy
 from .utils import hex_grouped, parse_bool
 from .register_types import Cmd, Cmdfield, Cmdmap, Regfield, Register
@@ -35,6 +36,9 @@ __all__ = [
     'HasSize',
     'class_or_instance_method',
     'cfg_field',
+    'config_defines',
+    'generate_config_header',
+    'write_config_header',
     'ConfigFieldTypeAliasInterface',
     'ConfigDumpable',
     'ConfigRefProxy',
