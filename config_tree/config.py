@@ -34,6 +34,7 @@ Organization:
 from __future__ import annotations
 
 import contextlib
+import functools
 import fnmatch
 import sys
 from dataclasses import dataclass, field, fields, Field
@@ -75,6 +76,14 @@ from .fields import cfg_field
 from .ref_proxy import ConfigRefProxy
 from .utils import hex_grouped
 from .utils import pascal_to_snake
+
+
+@functools.lru_cache(maxsize=None)
+def _snake_class_name(class_name: str) -> str:
+    """Snake-case name of a config class, converted once per class: the
+    automatic name of each instance appends its counter to it, which gives the
+    same result as converting the whole name, as digits are never split."""
+    return pascal_to_snake(class_name)
 
 # Tracks every Config subclass that has had _class_field_flags populated,
 # so Config.reset() can restore them to their metadata-derived defaults.
@@ -208,7 +217,7 @@ class Config:
     def __post_init__(self):
         # Auto-assign name if not provided, using class name and instance counter
         if not self.name:
-            self.name = pascal_to_snake(f"{type(self).__name__}{type(self)._class_inst_counter}")
+            self.name = _snake_class_name(type(self).__name__) + str(type(self)._class_inst_counter)
             type(self)._class_inst_counter += 1
         # Deep-copy the class-level field flags so each instance has its own mutable dict.
         self._field_flags: dict[str, dict[str, bool]] = {
