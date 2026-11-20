@@ -21,6 +21,10 @@ Writable fields are left out: their value is only known once make runs. So
 are the fields set when the simulation runs (``Annotated[T, Runtime]``, see
 gvrun.runtime), and the fields whose value is not a scalar (lists, configs,
 objects).
+
+Two fields giving the same name (e.g. ``soc/mem_size`` and ``soc/mem/size``)
+are both left out, with a comment, so that a source using the name fails to
+compile rather than getting the value of the other field.
 """
 
 from __future__ import annotations
@@ -103,14 +107,15 @@ def config_defines(config: Config, nodes: Iterable[Config] | None = None
         ) -> list[tuple[str, str, str]]:
     """(name, C value, description) of the readable fields of *config* and of
     the configs below it, named after their path from the root of the tree.
-    *nodes*, if given, restricts them to these configs."""
+    *nodes*, if given, restricts them to these configs. A name given by several
+    fields has the value None."""
     root = _root(config)
     subtree = _subtree(config)
     if nodes is not None:
         kept = {id(node) for node in nodes}
         subtree = [node for node in subtree if id(node) in kept]
-    defines: list[tuple[str, str, str]] = []
-    owners: dict[str, str] = {}
+    defines: dict[str, tuple[str, str, str]] = {}
+    owners: dict[str, list[str]] = {}
     for node in subtree:
         flags = getattr(node, '_field_flags', {})
         node_path = _relative_path(node, root)
@@ -130,12 +135,13 @@ def config_defines(config: Config, nodes: Iterable[Config] | None = None
                 continue
             field_path = f'{node_path}/{f.name}' if node_path else f.name
             name = config_define_name(field_path)
-            if name in owners:
-                raise ValueError(f'Config fields {owners[name]} and {field_path} '
-                                 f'both give the define {name}')
-            owners[name] = field_path
-            defines.append((name, c_value, f.metadata.get('description', '') or ''))
-    return defines
+            owners.setdefault(name, []).append(field_path)
+            if len(owners[name]) > 1:
+                fields_text = ', '.join(owners[name])
+                defines[name] = (name, None, f'Not defined: given by several fields ({fields_text})')
+            else:
+                defines[name] = (name, c_value, f.metadata.get('description', '') or '')
+    return list(defines.values())
 
 
 def generate_config_header(config: Config, nodes: Iterable[Config] | None = None,
@@ -155,7 +161,8 @@ def generate_config_header(config: Config, nodes: Iterable[Config] | None = None
         if desc:
             comment = ' '.join(desc.split()).replace('*/', '* /')
             lines.append(f'/* {comment} */')
-        lines.append(f'#define {name:<{width}}{value}')
+        if value is not None:
+            lines.append(f'#define {name:<{width}}{value}')
     lines += ['', f'#endif /* {guard} */', '']
     return '\n'.join(lines)
 

@@ -87,5 +87,9 @@ def test_duplicate_names():
             super().__post_init__()
             self.a = DupConfig("a")
 
-    with pytest.raises(ValueError, match="CONFIG_A_A_B"):
-        config_defines(TopConfig("top"))
+    top = TopConfig("top")
+    defines = {name: (value, desc) for name, value, desc in config_defines(top)}
+    value, desc = defines["CONFIG_A_A_B"]
+    assert value is None and "a_a_b" in desc and "a/a_b" in desc
+    header = generate_config_header(top)
+    assert "#define CONFIG_A_A_B" not in header and "/* Not defined" in header
