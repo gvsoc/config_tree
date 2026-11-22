@@ -34,6 +34,7 @@ Organization:
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import fnmatch
 import sys
@@ -84,6 +85,55 @@ def _snake_class_name(class_name: str) -> str:
     automatic name of each instance appends its counter to it, which gives the
     same result as converting the whole name, as digits are never split."""
     return pascal_to_snake(class_name)
+
+_alias_fields_by_class: dict[type, list[tuple[Field, Any]]] = {}
+
+
+def _resolve_field_type(cls: type, f: Field) -> Any:
+    """The type of a field, evaluated if it is a string, or the string if it
+    cannot be."""
+    if not isinstance(f.type, str):
+        return f.type
+    module = sys.modules.get(cls.__module__)
+    try:
+        return eval(f.type, dict(vars(module)) if module else {}, dict(vars(cls)))
+    except Exception:
+        return f.type
+
+
+def _alias_fields(cls: type) -> list[tuple[Field, Any]]:
+    """The init fields of a config class whose type is a field type alias, with
+    their alias handler, found once per class.
+
+    The types are resolved with get_type_hints, as they are strings in the
+    modules using ``from __future__ import annotations``. The fields given to
+    the handlers carry the resolved type, which some of them read (e.g. the
+    bounds of IntRange).
+    """
+    result = _alias_fields_by_class.get(cls)
+    if result is None:
+        try:
+            hints = get_type_hints(cls, include_extras=True)
+        except Exception:
+            # Some type cannot be resolved, e.g. a class defined in a function:
+            # the others are resolved one by one
+            hints = None
+        result = []
+        for f in fields(cls):
+            if not f.init:
+                continue
+            field_type = hints.get(f.name, f.type) if hints is not None \
+                else _resolve_field_type(cls, f)
+            handler = get_field_alias_formatter(field_type)
+            if handler is None:
+                continue
+            if f.type is not field_type:
+                f = copy.copy(f)
+                f.type = field_type
+            result.append((f, handler))
+        _alias_fields_by_class[cls] = result
+    return result
+
 
 # Tracks every Config subclass that has had _class_field_flags populated,
 # so Config.reset() can restore them to their metadata-derived defaults.
@@ -469,24 +519,19 @@ class Config:
         return []
 
     def _validate_inst_fields(self, none_policy: NonePolicy = 'fail') -> None:
-        for f in fields(self):
-            if not f.init or isinstance(getattr(self, f.name), Config):
-                continue
-            value = getattr(self, f.name)
-            # Skip None check if field's default is None (meaning None is allowed)
-            if value is None:
-                if none_policy == 'fail':
-                    # None is allowed if the field's default is explicitly None
-                    if f.default is None:
-                        continue
+        if none_policy == 'fail':
+            # No field can be None, unless None is its default
+            for f in fields(self):
+                if f.init and f.default is not None and getattr(self, f.name) is None:
                     raise ValueError(f"Field '{f.name}' in config '{self.path}' cannot be None")
-                elif none_policy in ('ignore', 'propagate'):
-                    # With ignore or propagate policy, skip None validation
-                    continue
-            alias_handler = get_field_alias_formatter(f.type)
-            if alias_handler:
-                value = alias_handler.validate(value, f, config=self)
-                setattr(self, f.name, value)
+        # Only the fields with an alias type have something more to validate,
+        # None values are left as they are
+        for f, alias_handler in _alias_fields(type(self)):
+            value = getattr(self, f.name)
+            if value is None or isinstance(value, Config):
+                continue
+            value = alias_handler.validate(value, f, config=self)
+            setattr(self, f.name, value)
 
     def _validate_inst(self, none_policy: NonePolicy = 'fail') -> None:
         self._validate_inst_fields(none_policy)
