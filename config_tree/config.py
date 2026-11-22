@@ -170,8 +170,12 @@ def _wrap_config_subclass(cls: Type["Config"], *, is_base: bool = False) -> None
         original_post_init = getattr(cls, '__post_init__', None)
         if original_post_init is None:
             raise RuntimeError(f"Config subclass {cls.__name__} must have a __post_init__ method (inherited or defined)")
+        # A subclass which does not define its own __post_init__ inherits the
+        # one of its parent, already wrapped: it is not wrapped again.
+        if '__post_init__' not in cls.__dict__ and \
+                getattr(original_post_init, '_config_wrapped', False):
+            return
         def wrapped_post_init(self, _orig=original_post_init):
-            from .config import Config
             depth = len(Config._parent_stack)
             try:
                 _orig(self)
@@ -181,6 +185,7 @@ def _wrap_config_subclass(cls: Type["Config"], *, is_base: bool = False) -> None
                 if len(Config._parent_stack) > depth:
                     Config._current_parent = Config._parent_stack.pop()
 
+        wrapped_post_init._config_wrapped = True
         cls.__post_init__ = wrapped_post_init
 
 
@@ -269,16 +274,31 @@ class Config:
         if not self.name:
             self.name = _snake_class_name(type(self).__name__) + str(type(self)._class_inst_counter)
             type(self)._class_inst_counter += 1
-        # Deep-copy the class-level field flags so each instance has its own mutable dict.
-        self._field_flags: dict[str, dict[str, bool]] = {
-            k: dict(v) for k, v in type(self)._class_field_flags.items()
-        }
         Config._parent_stack.append(Config._current_parent)
         if not self._defer_parent_init:
             self._do_adopt(Config._current_parent)
         else:
             self.path = self.name  # Temporary path, no registrations yet
         Config._current_parent = self
+
+    @property
+    def _field_flags(self) -> dict[str, dict[str, bool]]:
+        """The read/write flags of the fields of this config, to be read only.
+
+        They are the ones of the class, until they are changed for this config
+        only (see set_field_rw), which gives it its own copy.
+        """
+        flags = self.__dict__.get('_own_field_flags')
+        return flags if flags is not None else type(self)._class_field_flags
+
+    def _own_field_flags_for_write(self) -> dict[str, dict[str, bool]]:
+        """The read/write flags of this config, copied from the class ones the
+        first time, so that they can be changed for this config only."""
+        flags = self.__dict__.get('_own_field_flags')
+        if flags is None:
+            flags = {k: dict(v) for k, v in type(self)._class_field_flags.items()}
+            self.__dict__['_own_field_flags'] = flags
+        return flags
 
     def __hash__(self) -> int:
         return object.__hash__(self)
@@ -584,11 +604,14 @@ class Config:
                 entry['write'] = write
 
         if isinstance(cls_or_instance, Config):
-            _apply(cls_or_instance._field_flags)
+            _apply(cls_or_instance._own_field_flags_for_write())
         else:
+            # The configs which do not have their own flags read the class ones
             _apply(cls_or_instance._class_field_flags)
             for inst in Config._registry_by_class.get(cls_or_instance, set()):
-                _apply(inst._field_flags)
+                own = inst.__dict__.get('_own_field_flags')
+                if own is not None:
+                    _apply(own)
 
     @class_or_instance_method
     def get_ref(cls_or_instance, field_name: str) -> ConfigFieldRef:
