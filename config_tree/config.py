@@ -292,26 +292,31 @@ class Config:
             if self.label in Config._registry_by_label:
                 raise ValueError(f"Duplicate configuration label: {self.label}")
             Config._registry_by_label[self.label] = self
-        # Apply field overrides now that path is finalized
-        for f in fields(self):
-            path = self.__get_path()
-            if path:
-                path = path + '/' + f.name
-            else:
-                path = f.name
-            if f.init:
-                cmd_value = self._attribute_arg_values.get(path)
-                # Also try the path relative to the root config, so that
-                # users can write "chip/nb_cus=2" instead of
-                # "board_config0/chip/nb_cus=2".
-                if cmd_value is None and '/' in path:
-                    relative_path = path.split('/', 1)[1]
-                    cmd_value = self._attribute_arg_values.get(relative_path)
-                if cmd_value is not None:
-                    casted = cast_to_type(cmd_value, f.type, config=self)
-                    setattr(self, f.name, casted)
+        # Apply field overrides now that path is finalized. Most of the time
+        # none is given, and the fields are not even looked at.
+        if self._attribute_arg_values:
+            self._apply_field_overrides()
         # Run validation with overridden parameters.
         self.validate('ignore')
+
+    def _apply_field_overrides(self) -> None:
+        """Apply the command-line overrides given for the fields of this config."""
+        base = self.__get_path()
+        # The path relative to the root config is also accepted, so that
+        # users can write "chip/nb_cus=2" instead of "board_config0/chip/nb_cus=2"
+        relative_base = base.split('/', 1)[1] if base and '/' in base else None
+        for f in fields(self):
+            if not f.init:
+                continue
+            path = base + '/' + f.name if base else f.name
+            cmd_value = self._attribute_arg_values.get(path)
+            if cmd_value is None and base:
+                relative_path = relative_base + '/' + f.name if relative_base is not None \
+                    else f.name
+                cmd_value = self._attribute_arg_values.get(relative_path)
+            if cmd_value is not None:
+                casted = cast_to_type(cmd_value, f.type, config=self)
+                setattr(self, f.name, casted)
 
     @property
     def base_addresses(self) -> list[int]:
